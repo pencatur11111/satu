@@ -6,6 +6,7 @@ from io import BytesIO
 import time
 import random
 import urllib.parse
+import re
 from openpyxl.styles import PatternFill
 
 # --- KONFIGURASI USER-AGENT ---
@@ -16,16 +17,13 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
 ]
 
-# --- FUNGSI INTI TRANSLATE (DIPERBAIKI) ---
+# --- FUNGSI INTI TRANSLATE (ALTERNATIF KE-2) ---
 def translate_core(text, target, source='id'):
-    """Request ke Google API, ambil alternatif ke-2, fallback ke utama jika gagal."""
     if not text or str(text).strip().lower() in ["nan", "none", ""]:
         return ""
 
     headers = {"User-Agent": random.choice(USER_AGENTS)}
     base_url = "https://translate.googleapis.com/translate_a/single"
-
-    # Bangun URL manual: dt=t&dt=at
     query_params = {
         "client": "gtx",
         "sl": source,
@@ -40,34 +38,27 @@ def translate_core(text, target, source='id'):
             try:
                 result_json = response.json()
             except Exception:
-                return None  # JSON rusak, dianggap error
+                return None
 
-            # --- AMBIL ALTERNATIF KE-2 ---
+            # Ambil alternatif ke-2
             alternatives = None
             if isinstance(result_json, list) and len(result_json) > 1:
-                # Biasanya index 1 adalah array alternatif
                 second_elem = result_json[1]
                 if isinstance(second_elem, list) and len(second_elem) > 0:
-                    # Alternatif biasanya berbentuk list of list
                     alternatives = second_elem
 
             if alternatives and len(alternatives) >= 2:
-                # Pastikan elemen kedua punya teks pada index 0
                 if isinstance(alternatives[1], list) and len(alternatives[1]) > 0:
                     return str(alternatives[1][0])
 
-            # --- FALLBACK: TERJEMAHAN UTAMA ---
+            # Fallback ke terjemahan utama
             if isinstance(result_json, list) and len(result_json) > 0:
                 main_data = result_json[0]
                 if isinstance(main_data, list):
-                    translated_parts = []
-                    for part in main_data:
-                        if isinstance(part, list) and len(part) > 0:
-                            translated_parts.append(str(part[0]))
+                    translated_parts = [str(part[0]) for part in main_data if isinstance(part, list) and len(part) > 0]
                     if translated_parts:
                         return "".join(translated_parts)
-            return ""  # Tidak ada hasil sama sekali
-
+            return ""
         elif response.status_code == 429:
             return "ERR_LIMIT"
         else:
@@ -75,24 +66,53 @@ def translate_core(text, target, source='id'):
     except Exception:
         return None
 
-def translate_smart(text, target):
-    """Logika Chunking: Memecah teks raksasa (>4500 karakter)."""
-    text_str = str(text).strip()
+# --- PEMECAH TEKS CERDAS BERDASARKAN TANDA BACA ---
+def split_at_punctuation(text, max_len=4000):
+    """
+    Memecah teks menjadi potongan-potongan dengan panjang maksimal max_len,
+    memotong tepat di tanda baca ( . ; : , ) terdekat sebelum batas.
+    Jika tidak ada, potong di spasi terdekat, atau paksa di max_len.
+    """
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + max_len
+        if end >= len(text):
+            chunks.append(text[start:])
+            break
+        sub = text[start:end]
+        # Cari posisi terakhir dari salah satu tanda baca . ; : ,
+        matches = list(re.finditer(r'[.;:,]', sub))
+        if matches:
+            last_match = matches[-1]
+            split_point = start + last_match.end()  # setelah tanda baca
+        else:
+            last_space = sub.rfind(' ')
+            if last_space != -1:
+                split_point = start + last_space + 1  # setelah spasi
+            else:
+                split_point = end  # paksa potong di batas
+        chunks.append(text[start:split_point])
+        start = split_point
+    return chunks
 
+# --- TRANSLATE DENGAN CHUNKING PINTAR ---
+def translate_smart(text, target):
+    text_str = str(text).strip()
     if len(text_str) <= 4500:
         return translate_core(text_str, target)
 
-    chunks = [text_str[i:i+4000] for i in range(0, len(text_str), 4000)]
-    translated_results = []
+    # Pecah berdasarkan tanda baca
+    chunks = split_at_punctuation(text_str, max_len=4000)
+    translated_chunks = []
+    for chunk in chunks:
+        res = translate_core(chunk.strip(), target)
+        if res is None or res == "ERR_LIMIT":
+            return res if res == "ERR_LIMIT" else None
+        translated_chunks.append(res)
 
-    for c in chunks:
-        res = translate_core(c, target)
-        if res and res != "ERR_LIMIT":
-            translated_results.append(res)
-        else:
-            return "ERR_LIMIT" if res == "ERR_LIMIT" else None
-
-    return " ".join(translated_results)
+    # Gabung dengan spasi dan bersihkan spasi ganda
+    return " ".join(translated_chunks).replace("  ", " ")
 
 # --- ANTARMUKA STREAMLIT (TIDAK DIUBAH) ---
 st.set_page_config(page_title="Turbo Translator Pro v2", page_icon="⚡", layout="wide")
