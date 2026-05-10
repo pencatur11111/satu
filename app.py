@@ -258,7 +258,6 @@ if uploaded_file:
         "q": str(text).strip()
     }
     url = f"{base_url}?{urllib.parse.urlencode(query_params)}&dt=t&dt=at"
-
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = requests.get(url, headers=headers, timeout=12)
