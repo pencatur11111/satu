@@ -6,299 +6,212 @@ from io import BytesIO
 import time
 import random
 import urllib.parse
-from openpyxl.styles import PatternFill
+from openpyxl.styles import PatternFill, Font, Alignment
 
-# --- KONFIGURASI USER-AGENT ---
+# =============================================
+# KONFIGURASI MAHRUS - AGAR TIDAK MUDAH LIMIT
+# =============================================
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
 ]
 
-# --- FUNGSI INTI TRANSLATE (DENGAN RETRY & RATE LIMIT) ---
-def translate_core(text, target, source='id', retries=3):
-    """Request ke Google API dengan timeout dan retry. Ambil alternatif ke-2 jika ada."""
+MAX_RETRIES = 3          # kalau gagal/timeout, ulangi sampai 3x
+BACKOFF_FACTOR = 2       # jeda makin panjang tiap retry
+INITIAL_BACKOFF = 1.5    # detik
+
+# =============================================
+# FUNGSI ANTI LIMIT & ALTERNATIF 2 (MAHRUS MODE)
+# =============================================
+def translate_core(text, target, source='id', retries=MAX_RETRIES):
+    """Request ke Google Translate, pilih alternatif ke-2 jika tersedia,
+       dilengkapi mekanisme retry & backoff untuk hadapi limit."""
     if not text or str(text).strip().lower() in ["nan", "none", ""]:
         return ""
 
-    # Delay acak biar tidak dianggap bot
-    time.sleep(random.uniform(0.3, 0.8))
-
     headers = {"User-Agent": random.choice(USER_AGENTS)}
-    base = "https://translate.googleapis.com/translate_a/single"
+    base_url = "https://translate.googleapis.com/translate_a/single"
 
-    # Susun URL manual agar dt=t&dt=at pasti terkirim
-    query = urllib.parse.urlencode({
+    # Bangun URL manual agar dt=t dan dt=at PASTI terkirim
+    query_params = {
         "client": "gtx",
         "sl": source,
         "tl": target,
         "q": str(text).strip()
-    })
-    url = f"{base}?{query}&dt=t&dt=at"
+    }
+    url = f"{base_url}?{urllib.parse.urlencode(query_params)}&dt=t&dt=at"
 
-    for attempt in range(retries):
+    for attempt in range(1, retries + 1):
         try:
             response = requests.get(url, headers=headers, timeout=15)
             if response.status_code == 200:
-                result = response.json()
+                result_json = response.json()
+                # Cari alternatif ke-2 (index 1 di list alternatif)
+                alternatives = result_json[1] if len(result_json) > 1 else []
+                if len(alternatives) >= 2:
+                    return alternatives[1][0]   # INI ALTERNATIF KE-2, SESUAI PERMINTAAN
 
-                # Ambil alternatif ke-2 jika tersedia
-                if len(result) > 1 and len(result[1]) >= 2:
-                    return result[1][1][0]  # alternatif ke-2
-
-                # Fallback ke terjemahan utama
-                if isinstance(result[0], list):
-                    parts = [p[0] for p in result[0] if p[0]]
-                    return "".join(parts)
+                # Fallback ke terjemahan utama jika alternatif tidak cukup
+                if isinstance(result_json[0], list):
+                    translated_parts = [part[0] for part in result_json[0] if part[0]]
+                    return "".join(translated_parts)
                 return ""
 
             elif response.status_code == 429:
-                # Kena limit, tunggu lebih lama lalu ulangi
-                wait = (attempt + 1) * 3
-                time.sleep(wait)
-                continue
+                if attempt == retries:
+                    return "ERR_LIMIT"   # sudah mentok, kasih kode error
+                else:
+                    sleep_time = INITIAL_BACKOFF * (BACKOFF_FACTOR ** (attempt - 1))
+                    time.sleep(sleep_time)
+                    continue
             else:
-                # Error lain, ulangi
-                time.sleep(1)
-                continue
+                # error lain (500, 403, dll)
+                if attempt == retries:
+                    return None
+                else:
+                    time.sleep(INITIAL_BACKOFF * attempt)
+                    continue
 
         except Exception:
-            time.sleep(1)
-            continue
+            if attempt == retries:
+                return None
+            else:
+                time.sleep(INITIAL_BACKOFF * attempt)
+                continue
 
-    # Jika sudah retry maksimal masih gagal, kembalikan teks asli agar tidak kosong total
-    return f"[ERR] {text[:80]}"
-
-def translate_smart(text, target):
-    """Chunking teks besar (>4500 karakter) biar aman."""
-    text_str = str(text).strip()
-    if len(text_str) <= 4500:
-        return translate_core(text_str, target)
-
-    # Pecah per 4000 char
-    chunks = [text_str[i:i+4000] for i in range(0, len(text_str), 4000)]
-    hasil = []
-    for chunk in chunks:
-        res = translate_core(chunk, target)
-        if res and not res.startswith("[ERR]"):
-            hasil.append(res)
-        else:
-            return res  # hentikan jika gagal
-    return " ".join(hasil)
-
-# --- TAMPILAN STREAMLIT ---
-st.set_page_config(page_title="Translator 26K - v3", page_icon="💎", layout="wide")
-st.title("🐓 Turbo Excel Translator (Versi 26K Baris)")
-st.markdown("Alat terjemahan massal anti limit. Kode bahasa tujuan isi di sidebar kiri.")
-
-# --- SIDEBAR ---
-st.sidebar.header("⚙️ Konfigurasi")
-target_lang = st.sidebar.text_input("Kode Bahasa Tujuan", value="en", help="contoh: en, ja, ko")
-workers = st.sidebar.slider("Jumlah Worker (disarankan 3-5)", 1, 5, 3,
-                            help="Makin sedikit makin aman, makin banyak risiko limit.")
-st.sidebar.info("📌 Untuk 26.000+ baris, disarankan **worker = 3** dan bersabar. Proses bisa memakan waktu 2-6 jam di lokal.")
-
-# --- UPLOAD FILE ---
-uploaded = st.file_uploader("Upload file Excel (.xlsx)", type=["xlsx"])
-if uploaded:
-    df = pd.read_excel(uploaded)
-    st.success(f"File dimuat: {uploaded.name} | Total baris: {len(df)}")
-
-    if st.button("🚀 Mulai Terjemahkan (Semua Baris)"):
-        if df.shape[1] < 2:
-            st.error("Minimal ada 2 kolom (kolom B akan diterjemahkan).")
-        else:
-            teks = df.iloc[:, 1].astype(str).tolist()
-            total = len(teks)
-            hasil = [None] * total
-
-            progress = st.progress(0)
-            status_teks = st.empty()
-            waktu_teks = st.empty()
-            start = time.time()
-
-            # Eksekusi paralel dengan worker terbatas
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                # Kirim tugas
-                future_map = {executor.submit(translate_smart, teks[i], target_lang): i for i in range(total)}
-                selesai = 0
-                for future in as_completed(future_map):
-                    idx = future_map[future]
-                    try:
-                        hasil[idx] = future.result()
-                    except:
-                        hasil[idx] = "[ERR] Exception"
-                    selesai += 1
-
-                    # Perkiraan sisa waktu
-                    elapsed = time.time() - start
-                    rata = elapsed / selesai
-                    eta = int(rata * (total - selesai))
-                    progress.progress(selesai / total)
-                    status_teks.write(f"⏳ Selesai {selesai}/{total} baris")
-                    waktu_teks.markdown(f"⏱️ Perkiraan sisa: **{eta//60} menit {eta%60} detik**")
-
-            # Tambahkan kolom hasil
-            df['Hasil Translate'] = hasil
-
-            # Preview
-            st.subheader("📋 Cuplikan Hasil (5 Baris Pertama)")
-            st.dataframe(df[['Hasil Translate']].head())
-
-            # Siapkan file unduh
-            nama_file = uploaded.name.rsplit('.', 1)[0]
-            file_hasil = f"{nama_file} ({target_lang}).xlsx"
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='Sheet1')
-                workbook = writer.book
-                sheet = writer.sheets['Sheet1']
-                red = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-                # Warnai merah jika error atau kosong
-                for baris, val in enumerate(hasil, start=2):
-                    if val is None or val == "" or val.startswith("[ERR]"):
-                        for kol in range(1, df.shape[1]+1):
-                            sheet.cell(row=baris, column=kol).fill = red
-
-            st.success(f"✅ Selesai! Nama file: {file_hasil}")
-            st.download_button("📥 Unduh Hasil", data=output.getvalue(),
-                               file_name=file_hasil,
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")    try:
-        response = requests.get(base_url, params=params, headers=headers, timeout=12)
-        if response.status_code == 200:
-            result_json = response.json()
-            
-            # Cek apakah ada alternatif (index 1) dan minimal 2 item
-            alternatives = result_json[1] if len(result_json) > 1 else []
-            if len(alternatives) >= 2:
-                # Ambil teks alternatif ke-2 (index 1)
-                return alternatives[1][0]
-            
-            # Fallback: gabung terjemahan utama seperti biasa
-            if isinstance(result_json[0], list):
-                translated_parts = [part[0] for part in result_json[0] if part[0]]
-                return "".join(translated_parts)
-            return ""
-        elif response.status_code == 429:
-            return "ERR_LIMIT"
-    except Exception:
-        pass
     return None
 
 def translate_smart(text, target):
-    """Logika Chunking: Memecah teks raksasa (>4500 karakter)."""
+    """Pintar: jika teks super panjang (>4000 karakter), pecah jadi beberapa
+       bagian lalu gabung lagi, biar tidak ditolak Google karena URL kepanjangan."""
     text_str = str(text).strip()
-    
-    if len(text_str) <= 4500:
+    if len(text_str) <= 4000:
         return translate_core(text_str, target)
-    
-    # Pecah per 4000 karakter agar aman dari limit URL
-    chunks = [text_str[i:i+4000] for i in range(0, len(text_str), 4000)]
-    translated_results = []
-    
-    for c in chunks:
-        res = translate_core(c, target)
-        if res and res != "ERR_LIMIT":
-            translated_results.append(res)
-        else:
-            return "ERR_LIMIT" if res == "ERR_LIMIT" else None
-            
-    return " ".join(translated_results)
 
-# --- ANTARMUKA STREAMLIT ---
-st.set_page_config(page_title="Turbo Translator Pro v2", page_icon="⚡", layout="wide")
+    # Pecah per 3800 karakter (aman dari batas URL)
+    chunks = [text_str[i:i+3800] for i in range(0, len(text_str), 3800)]
+    translated_chunks = []
+    for chunk in chunks:
+        res = translate_core(chunk, target)
+        if res is None or res == "ERR_LIMIT":
+            return res   # hentikan jika ada error
+        translated_chunks.append(res)
+    return " ".join(translated_chunks)
 
-st.title("⚡ Turbo Excel Translator")
-st.markdown("Alat translasi otomatis untuk file Excel buatan fadhil ganteng kece keren hebat slebew.  kalo gatau kodenya tanya gugel nulisnya gini 639-1 kode bahasa ..... bahasa mu ketiken. JANGAN LUPA DIKASIH LETI 1 BARIS DIATAS NYA")
-st.markdown("PAKAILAH 1 TAB AJA JANGAN MULTI TAB WOYYYY RUSAK HOST E, NDAK TAK HOST NO MANEH WM")
-# --- SIDEBAR ---
-st.sidebar.header("⚙️ Pengaturan")
-target_lang = st.sidebar.text_input("Kode Bahasa Tujuan", value="en", help="Contoh: en, ja, fi, ko, ar")
-max_workers = st.sidebar.slider("Kecepatan (Workers)", 1, 15, 5, help="Disarankan 5-10 agar aman.")
+# =============================================
+# TAMPILAN STREAMLIT - EDISI KLAIM MAHRUS
+# =============================================
+st.set_page_config(page_title="Translator Sakti Mahrus", page_icon="🧞‍♂️", layout="wide")
+
+# --- KLAIM MAHRUS DI SIDEBAR ---
+st.sidebar.markdown("<h1 style='text-align: center; color: gold;'>🧞‍♂️ KLAIM MAHRUS</h1>", unsafe_allow_html=True)
+if st.sidebar.button("✨ Klik untuk Klaim Mahrus ✨"):
+    st.balloons()
+    st.sidebar.success("MAHRUS SUDAH DIRESTUI! GOOGLE TRANSLATE NURUT, LIMIT MENJAUH, HASIL MANTAP!")
+    st.sidebar.markdown("> *\"Wleeeee...\"* — Mahrus")
 
 st.sidebar.markdown("---")
-st.sidebar.info("📌 **Catatan:**\nJika hasil download berwarna merah, artinya IP kamu terkena limit sementara. Kurangi Workers atau ganti koneksi internet. pesan untuk mahrus UWES RUS NEK GA KUAT 10 AE GAUSA MEKSO DIULEK ULEK KODENE SAMPE DADI 100!!!")
+st.sidebar.header("⚙️ Setelan Dewa")
+target_lang = st.sidebar.text_input("Kode Bahasa Tujuan", value="en", help="Contoh: en, ja, fi, ko, ar. Lihat kode ISO 639-1.")
+max_workers = st.sidebar.slider("Jumlah Worker (Pasukan Mahrus)", 1, 10, 5,
+                                help="MAHRUS bilang: 5-8 aja, jangan serakah. 10 maksimal.")
 
-# --- PROSES UTAMA ---
-uploaded_file = st.file_uploader("Upload file Excel (.xlsx)", type=["xlsx"])
+st.sidebar.markdown("---")
+st.sidebar.info("💡 **Kutipan Mahrus:**\n"
+                "- *\"Baris merah? Turunin worker, sholat dulu.*\"\n"
+                "- *\"Klaim dulu biar jos, jangan lupa baca bismillah.*\"\n"
+                "- *\"Alternatif ke-2 itu bukti kemewahan, hasilnya lebih dalem.*\"")
+
+# --- JUDUL UTAMA ---
+st.title("🧞‍♂️ Translator Excel Super Mahrus — Edisi Canggih Anti Limit")
+st.markdown(
+    "Masukkan file Excel, **kolom B** akan diterjemahkan pakai **alternatif ke-2** ala Google Translate. "
+    "Cocok buat 26.000 baris teks panjang, asal klaim Mahrus dulu ya 😎"
+)
+
+# --- UPLOAD FILE ---
+uploaded_file = st.file_uploader("📂 Upload file Excel (.xlsx)", type=["xlsx"])
 
 if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file)
-        st.success(f"File dimuat: '{uploaded_file.name}' | Total: {len(df)} baris.")
+        st.success(f"✅ File '{uploaded_file.name}' siap digempur! Total {len(df)} baris.")
 
-        if st.button("🚀 Mulai Terjemahkan"):
+        if st.button("🚀 MULAI TERJEMAHKAN (INI PERJUANGAN MAHRUS)"):
             if df.shape[1] < 2:
-                st.error("Kolom B (Kolom ke-2) tidak ditemukan!")
+                st.error("Kolom B (kolom kedua) tidak ditemukan. Pastikan data ada di kolom B ya.")
             else:
-                texts_to_process = df.iloc[:, 1].tolist()
-                total_rows = len(texts_to_process)
-                results = [None] * total_rows
-                
-                # UI Progress
+                texts = df.iloc[:, 1].astype(str).tolist()
+                total = len(texts)
+                results = [None] * total
+
+                # Progress bar
                 progress_bar = st.progress(0)
-                status_placeholder = st.empty()
-                time_placeholder = st.empty()
-                
+                status_text = st.empty()
+                time_text = st.empty()
                 start_time = time.time()
 
-                # --- MULTITHREADING ---
+                # Thread pool dengan max_workers dari slider
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    future_to_idx = {executor.submit(translate_smart, texts_to_process[i], target_lang): i for i in range(total_rows)}
-                    
+                    future_to_idx = {executor.submit(translate_smart, texts[i], target_lang): i for i in range(total)}
                     completed = 0
-                    for future in future_to_idx:
+                    for future in as_completed(future_to_idx):
                         idx = future_to_idx[future]
                         try:
                             results[idx] = future.result()
                         except:
                             results[idx] = None
-                        
                         completed += 1
-                        
-                        # Hitung Estimasi Waktu
-                        elapsed = time.time() - start_time
-                        avg_time = elapsed / completed
-                        eta = int(avg_time * (total_rows - completed))
-                        
-                        # Update Progress UI
-                        progress_bar.progress(completed / total_rows)
-                        status_placeholder.write(f"⏳ Memproses: {completed}/{total_rows} baris")
-                        time_placeholder.markdown(f"⏱️ Sisa waktu: **{eta} detik**")
 
+                        # Update progress & estimasi
+                        elapsed = time.time() - start_time
+                        if completed > 0:
+                            eta = (elapsed / completed) * (total - completed)
+                            status_text.write(f"⏳ {completed}/{total} baris selesai")
+                            time_text.markdown(f"⏱️ Estimasi sisa: **{int(eta//60)} menit {int(eta%60)} detik**")
+                        progress_bar.progress(completed / total)
+
+                # Tambahkan kolom hasil
                 df['Hasil Translate'] = results
-                
-                # --- PREVIEW ---
-                st.subheader("📋 Preview Hasil (5 Baris Pertama)")
+
+                # --- PREVIEW 5 BARIS PERTAMA ---
+                st.subheader("📋 Cuplikan Hasil (5 Baris Pertama)")
                 st.dataframe(df[['Hasil Translate']].head(5))
 
-                # --- GENERASI FILE DENGAN WARNA & NAMA DINAMIS ---
-                nama_file_murni = uploaded_file.name.rsplit('.', 1)[0]
-                nama_file_baru = f"{nama_file_murni} ({target_lang}).xlsx"
+                # --- GENERASI FILE DENGAN WARNA KREASI MAHRUS ---
+                nama_bersih = uploaded_file.name.rsplit('.', 1)[0]
+                nama_output = f"{nama_bersih}_Mahrus_{target_lang}.xlsx"
 
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df.to_excel(writer, index=False, sheet_name='Sheet1')
-                    
                     workbook = writer.book
-                    worksheet = writer.sheets['Sheet1']
-                    red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-                    
-                    # Cek error untuk diwarnai merah
-                    for row_num, val in enumerate(results, start=2):
-                        if val is None or val == "ERR_LIMIT" or val == "":
-                            for col_num in range(1, df.shape[1] + 1):
-                                worksheet.cell(row=row_num, column=col_num).fill = red_fill
+                    sheet = writer.sheets['Sheet1']
 
-                st.success(f"✅ Selesai! Nama file: {nama_file_baru}")
-                
+                    # Warna merah muda untuk error
+                    merah_mahrus = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+                    # Warna emas kehijauan untuk sukses (biar tambah canggih)
+                    emas_mahrus = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+
+                    for row_idx, hasil in enumerate(results, start=2):
+                        if hasil is None or hasil == "ERR_LIMIT" or hasil == "":
+                            # baris error -> merah di semua kolom
+                            for col in range(1, df.shape[1] + 1):
+                                sheet.cell(row=row_idx, column=col).fill = merah_mahrus
+                        else:
+                            # baris sukses -> emas kehijauan biar sumringah
+                            sheet.cell(row=row_idx, column=df.shape[1]).fill = emas_mahrus
+
+                st.success(f"✅ Perjuangan selesai! Nama file: **{nama_output}**")
                 st.download_button(
                     label="📥 Download Hasil Terjemahan",
                     data=output.getvalue(),
-                    file_name=nama_file_baru,
+                    file_name=nama_output,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
     except Exception as e:
-        st.error(f"Terjadi kesalahan: {e}")
+        st.error(f"❌ Ada kesalahan teknis: {e}")
+        st.info("Coba:\n- Pastikan file tidak corrupt\n- Kurangi worker\n- Istirahat sejenak (biar IP gak diblokir)")
