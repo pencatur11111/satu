@@ -267,7 +267,6 @@ if uploaded_file:
                 alternatives = result_json[1] if len(result_json) > 1 else []
                 if len(alternatives) >= 2:
                     return alternatives[1][0]
-                # Fallback ke terjemahan utama
                 if isinstance(result_json[0], list):
                     translated_parts = [part[0] for part in result_json[0] if part[0]]
                     return "".join(translated_parts)
