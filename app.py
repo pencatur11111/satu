@@ -37,10 +37,10 @@ def translate_core(text, target, source='id'):
         if response.status_code == 200:
             try:
                 result_json = response.json()
-            except Exception:
+            except:
                 return None
 
-            # Alternatif ke-2
+            # Alternatif ke-2 jika ada
             alternatives = None
             if isinstance(result_json, list) and len(result_json) > 1:
                 second_elem = result_json[1]
@@ -62,71 +62,44 @@ def translate_core(text, target, source='id'):
             return "ERR_LIMIT"
         else:
             return None
-    except Exception:
+    except:
         return None
 
-# --- DUA STRATEGI CHUNKING (HANYA : . ;) ---
-def chunk_by_punctuation(text):
-    """Mode Akurat: pecah di setiap tanda baca : . ;"""
-    # Regex: ambil semua karakter sampai bertemu : . ; (termasuk tanda bacanya)
-    pattern = r'[^:. ]*[:. ]?'   # [^:. ]* lalu opsional : . 
-    chunks = re.findall(pattern, text)
-    return [c.strip() for c in chunks if c.strip()]
+# --- PEMBERSIH INGGRIS DI HASIL AKHIR ---
+def clean_english(text, target_lang):
+    """
+    Cari kata/kalimat berbahasa Inggris dalam hasil terjemahan,
+    lalu terjemahkan ke target_lang dan ganti. Kembalikan teks bersih.
+    """
+    if not text or not isinstance(text, str):
+        return text
 
-def chunk_by_length(text, max_len=4000):
-    """Mode Cepat: pecah jika > max_len, potong di : . ; terdekat"""
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + max_len
-        if end >= len(text):
-            chunks.append(text[start:].strip())
-            break
-        sub = text[start:end]
-        # Cari posisi terakhir dari : . ; di dalam sub
-        matches = list(re.finditer(r'[:.]', sub))
-        if matches:
-            last_match = matches[-1]
-            split_point = start + last_match.end()
-        else:
-            last_space = sub.rfind(' ')
-            if last_space != -1:
-                split_point = start + last_space + 1
-            else:
-                split_point = end
-        chunks.append(text[start:split_point].strip())
-        start = split_point
-    return [c for c in chunks if c]
+    # Pola: karakter alfabet + spasi yang mungkin membentuk kata/frasa Inggris
+    # Menangkap minimal 2 huruf biar tidak tertukar singkatan
+    pattern = r'[A-Za-z]{2,}'
+    matches = re.findall(pattern, text)
+    if not matches:
+        return text
 
-# --- TRANSLATE DENGAN CHUNKING (PILIH MODE) ---
-def translate_smart(text, target, mode="Cepat"):
-    text_str = str(text).strip()
-    if not text_str:
-        return ""
+    # Ganti setiap kata/kalimat Inggris unik agar tidak dobel request
+    unique_words = list(set(matches))
+    for word in unique_words:
+        # Terjemahkan dari Inggris ke target
+        translated = translate_core(word, target_lang, source='en')
+        if translated and translated != "ERR_LIMIT" and translated != "":
+            text = text.replace(word, translated)
+    return text
 
-    # Tentukan strategi chunking
-    if mode == "Akurat":
-        # Pakai chunk_by_punctuation jika ada salah satu dari : . ;
-        if any(p in text_str for p in [':', '.', ';']):
-            chunks = chunk_by_punctuation(text_str)
-        else:
-            chunks = [text_str]
-    else:  # Cepat
-        if len(text_str) <= 4000:
-            chunks = [text_str]
-        else:
-            chunks = chunk_by_length(text_str, 4000)
-
-    translated_chunks = []
-    for chunk in chunks:
-        if not chunk:
-            continue
-        res = translate_core(chunk, target)
-        if res is None or res == "ERR_LIMIT":
-            return res if res == "ERR_LIMIT" else None
-        translated_chunks.append(res)
-
-    return " ".join(translated_chunks).replace("  ", " ")
+# --- TRANSLATE TANPA CHUNKING (SIMPEL) ---
+def translate_smart(text, target):
+    """
+    Terjemahkan seluruh teks, ambil alternatif ke-2,
+    lalu bersihkan sisa kata Inggris.
+    """
+    result = translate_core(text, target, source='id')
+    if result and result != "ERR_LIMIT":
+        result = clean_english(result, target)
+    return result
 
 # --- ANTARMUKA STREAMLIT ---
 st.set_page_config(page_title="Turbo Translator Pro v2", page_icon="⚡", layout="wide")
@@ -138,8 +111,6 @@ st.markdown("PAKAILAH 1 TAB AJA JANGAN MULTI TAB WOYYYY RUSAK HOST E, NDAK TAK H
 st.sidebar.header("⚙️ Pengaturan")
 target_lang = st.sidebar.text_input("Kode Bahasa Tujuan", value="en", help="Contoh: en, ja, fi, ko, ar")
 max_workers = st.sidebar.slider("Kecepatan (Workers)", 1, 15, 5, help="Disarankan 5-10 agar aman.")
-chunk_mode = st.sidebar.radio("Mode Chunking", ["Cepat", "Akurat"], index=0,
-                              help="Cepat: potong hanya jika >4000 karakter. Akurat: potong di setiap : . ; (lebih lambat).")
 
 st.sidebar.markdown("---")
 st.sidebar.info("📌 **Catatan:**\nJika hasil download berwarna merah, artinya IP kamu terkena limit sementara. Kurangi Workers atau ganti koneksi internet. pesan untuk mahrus UWES RUS NEK GA KUAT 10 AE GAUSA MEKSO DIULEK ULEK KODENE SAMPE DADI 100!!!")
@@ -166,11 +137,9 @@ if uploaded_file:
 
                 start_time = time.time()
 
+                # --- MULTITHREADING ---
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    future_to_idx = {
-                        executor.submit(translate_smart, texts_to_process[i], target_lang, chunk_mode): i
-                        for i in range(total_rows)
-                    }
+                    future_to_idx = {executor.submit(translate_smart, texts_to_process[i], target_lang): i for i in range(total_rows)}
 
                     completed = 0
                     for future in future_to_idx:
@@ -189,6 +158,8 @@ if uploaded_file:
                         status_placeholder.write(f"⏳ Memproses: {completed}/{total_rows} baris")
                         time_placeholder.markdown(f"⏱️ Sisa waktu: **{eta} detik**")
 
+                # Cleaning tahap akhir (memastikan bersih dari Inggris)
+                # Ini sudah dilakukan di translate_smart, jadi aman
                 df['Hasil Translate'] = results
 
                 st.subheader("📋 Preview Hasil (5 Baris Pertama)")
