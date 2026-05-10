@@ -65,46 +65,41 @@ def translate_core(text, target, source='id'):
     except:
         return None
 
-# --- PEMBERSIH INGGRIS DI HASIL AKHIR ---
-def clean_english(text, target_lang):
+# --- PEMBERSIH INGGRIS OTOMATIS (RINGAN) ---
+def clean_english_light(text, target_lang):
     """
-    Cari kata/kalimat berbahasa Inggris dalam hasil terjemahan,
-    lalu terjemahkan ke target_lang dan ganti. Kembalikan teks bersih.
+    Cari kata bahasa Inggris (alfabet murni, >=3 huruf) di hasil,
+    maksimal 5 kata unik per sel. Terjemahkan & ganti.
     """
     if not text or not isinstance(text, str):
         return text
 
-    # Pola: karakter alfabet + spasi yang mungkin membentuk kata/frasa Inggris
-    # Menangkap minimal 2 huruf biar tidak tertukar singkatan
-    pattern = r'[A-Za-z]{2,}'
-    matches = re.findall(pattern, text)
+    # Cari semua kata dengan huruf alfabet saja (termasuk apostrof internal)
+    matches = re.findall(r'\b[A-Za-z]{3,}\b', text)
     if not matches:
         return text
 
-    # Ganti setiap kata/kalimat Inggris unik agar tidak dobel request
-    unique_words = list(set(matches))
+    # Ambil maksimal 5 kata unik (diurutkan agar stabil)
+    unique_words = list(dict.fromkeys(matches))[:5]
+
     for word in unique_words:
-        # Terjemahkan dari Inggris ke target
         translated = translate_core(word, target_lang, source='en')
         if translated and translated != "ERR_LIMIT" and translated != "":
-            text = text.replace(word, translated)
+            # Ganti hanya kata utuh (pakai word boundary)
+            text = re.sub(r'\b' + re.escape(word) + r'\b', translated, text, count=1)
     return text
 
-# --- TRANSLATE TANPA CHUNKING (SIMPEL) ---
+# --- TRANSLATE TANPA CHUNKING (SIMPEL + BERSIH OTOMATIS) ---
 def translate_smart(text, target):
-    """
-    Terjemahkan seluruh teks, ambil alternatif ke-2,
-    lalu bersihkan sisa kata Inggris.
-    """
     result = translate_core(text, target, source='id')
     if result and result != "ERR_LIMIT":
-        result = clean_english(result, target)
+        result = clean_english_light(result, target)   # selalu aktif
     return result
 
 # --- ANTARMUKA STREAMLIT ---
 st.set_page_config(page_title="Turbo Translator Pro v2", page_icon="⚡", layout="wide")
 
-st.title("⚡ Turbo Excel Translator")
+st.title("⚡ Turbo Excel Translator (Otomatis Bersih Inggris)")
 st.markdown("Alat translasi otomatis untuk file Excel buatan fadhil ganteng kece keren hebat slebew.  kalo gatau kodenya tanya gugel nulisnya gini 639-1 kode bahasa ..... bahasa mu ketiken. JANGAN LUPA DIKASIH LETI 1 BARIS DIATAS NYA")
 st.markdown("PAKAILAH 1 TAB AJA JANGAN MULTI TAB WOYYYY RUSAK HOST E, NDAK TAK HOST NO MANEH WM")
 
@@ -113,7 +108,10 @@ target_lang = st.sidebar.text_input("Kode Bahasa Tujuan", value="en", help="Cont
 max_workers = st.sidebar.slider("Kecepatan (Workers)", 1, 15, 5, help="Disarankan 5-10 agar aman.")
 
 st.sidebar.markdown("---")
-st.sidebar.info("📌 **Catatan:**\nJika hasil download berwarna merah, artinya IP kamu terkena limit sementara. Kurangi Workers atau ganti koneksi internet. pesan untuk mahrus UWES RUS NEK GA KUAT 10 AE GAUSA MEKSO DIULEK ULEK KODENE SAMPE DADI 100!!!")
+st.sidebar.info("📌 **Catatan:**\nHasil sekarang otomatis bersih dari sisa kata Inggris seperti 'has been told'. "
+                "Maksimal 5 kata unik dibersihkan per sel agar tetap cepat. "
+                "Jika masih ada yang merah, kurangi Workers atau istirahat dulu.\n\n"
+                "pesan untuk mahrus UWES RUS NEK GA KUAT 10 AE GAUSA MEKSO DIULEK ULEK KODENE SAMPE DADI 100!!!")
 
 # --- PROSES UTAMA ---
 uploaded_file = st.file_uploader("Upload file Excel (.xlsx)", type=["xlsx"])
@@ -137,7 +135,6 @@ if uploaded_file:
 
                 start_time = time.time()
 
-                # --- MULTITHREADING ---
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_to_idx = {executor.submit(translate_smart, texts_to_process[i], target_lang): i for i in range(total_rows)}
 
@@ -158,8 +155,6 @@ if uploaded_file:
                         status_placeholder.write(f"⏳ Memproses: {completed}/{total_rows} baris")
                         time_placeholder.markdown(f"⏱️ Sisa waktu: **{eta} detik**")
 
-                # Cleaning tahap akhir (memastikan bersih dari Inggris)
-                # Ini sudah dilakukan di translate_smart, jadi aman
                 df['Hasil Translate'] = results
 
                 st.subheader("📋 Preview Hasil (5 Baris Pertama)")
