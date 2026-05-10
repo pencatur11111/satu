@@ -65,15 +65,16 @@ def translate_core(text, target, source='id'):
     except Exception:
         return None
 
-# --- DUA STRATEGI CHUNKING ---
+# --- DUA STRATEGI CHUNKING (HANYA : . ;) ---
 def chunk_by_punctuation(text):
-    """Mode Akurat: pecah di setiap tanda baca . ; : ,"""
-    pattern = r'[^.;:,]*[.;:,]?'
+    """Mode Akurat: pecah di setiap tanda baca : . ;"""
+    # Regex: ambil semua karakter sampai bertemu : . ; (termasuk tanda bacanya)
+    pattern = r'[^:. ]*[:. ]?'   # [^:. ]* lalu opsional : . 
     chunks = re.findall(pattern, text)
     return [c.strip() for c in chunks if c.strip()]
 
 def chunk_by_length(text, max_len=4000):
-    """Mode Cepat: pecah jika > max_len, potong di tanda baca terdekat"""
+    """Mode Cepat: pecah jika > max_len, potong di : . ; terdekat"""
     chunks = []
     start = 0
     while start < len(text):
@@ -82,7 +83,8 @@ def chunk_by_length(text, max_len=4000):
             chunks.append(text[start:].strip())
             break
         sub = text[start:end]
-        matches = list(re.finditer(r'[.;:,]', sub))
+        # Cari posisi terakhir dari : . ; di dalam sub
+        matches = list(re.finditer(r'[:.]', sub))
         if matches:
             last_match = matches[-1]
             split_point = start + last_match.end()
@@ -104,8 +106,8 @@ def translate_smart(text, target, mode="Cepat"):
 
     # Tentukan strategi chunking
     if mode == "Akurat":
-        # Pakai chunk_by_punctuation hanya jika ada tanda baca; jika tidak, langsung utuh
-        if any(p in text_str for p in ['.', ';', ':', ',']):
+        # Pakai chunk_by_punctuation jika ada salah satu dari : . ;
+        if any(p in text_str for p in [':', '.', ';']):
             chunks = chunk_by_punctuation(text_str)
         else:
             chunks = [text_str]
@@ -137,7 +139,7 @@ st.sidebar.header("⚙️ Pengaturan")
 target_lang = st.sidebar.text_input("Kode Bahasa Tujuan", value="en", help="Contoh: en, ja, fi, ko, ar")
 max_workers = st.sidebar.slider("Kecepatan (Workers)", 1, 15, 5, help="Disarankan 5-10 agar aman.")
 chunk_mode = st.sidebar.radio("Mode Chunking", ["Cepat", "Akurat"], index=0,
-                              help="Cepat: potong hanya jika >4000 karakter. Akurat: potong di setiap tanda baca (lebih lambat).")
+                              help="Cepat: potong hanya jika >4000 karakter. Akurat: potong di setiap : . ; (lebih lambat).")
 
 st.sidebar.markdown("---")
 st.sidebar.info("📌 **Catatan:**\nJika hasil download berwarna merah, artinya IP kamu terkena limit sementara. Kurangi Workers atau ganti koneksi internet. pesan untuk mahrus UWES RUS NEK GA KUAT 10 AE GAUSA MEKSO DIULEK ULEK KODENE SAMPE DADI 100!!!")
