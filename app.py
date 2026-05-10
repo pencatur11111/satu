@@ -40,7 +40,7 @@ def translate_core(text, target, source='id'):
             except Exception:
                 return None
 
-            # Ambil alternatif ke-2
+            # Ambil alternatif ke-2 jika ada
             alternatives = None
             if isinstance(result_json, list) and len(result_json) > 1:
                 second_elem = result_json[1]
@@ -51,7 +51,7 @@ def translate_core(text, target, source='id'):
                 if isinstance(alternatives[1], list) and len(alternatives[1]) > 0:
                     return str(alternatives[1][0])
 
-            # Fallback ke terjemahan utama
+            # Fallback utama
             if isinstance(result_json, list) and len(result_json) > 0:
                 main_data = result_json[0]
                 if isinstance(main_data, list):
@@ -66,44 +66,34 @@ def translate_core(text, target, source='id'):
     except Exception:
         return None
 
-# --- PEMECAH TEKS CERDAS BERDASARKAN TANDA BACA ---
-def split_at_punctuation(text, max_len=4000):
+# --- PEMECAH TEKS PERSIS DI SETIAP TANDA BACA . ; : , ---
+def split_by_punctuation(text):
     """
-    Memecah teks menjadi potongan-potongan dengan panjang maksimal max_len,
-    memotong tepat di tanda baca ( . ; : , ) terdekat sebelum batas.
-    Jika tidak ada, potong di spasi terdekat, atau paksa di max_len.
+    Memecah teks menjadi potongan setiap bertemu karakter . ; : ,
+    Potongan tidak dihapus, tanda baca tetap disertakan di akhir potongan.
     """
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + max_len
-        if end >= len(text):
-            chunks.append(text[start:])
-            break
-        sub = text[start:end]
-        # Cari posisi terakhir dari salah satu tanda baca . ; : ,
-        matches = list(re.finditer(r'[.;:,]', sub))
-        if matches:
-            last_match = matches[-1]
-            split_point = start + last_match.end()  # setelah tanda baca
-        else:
-            last_space = sub.rfind(' ')
-            if last_space != -1:
-                split_point = start + last_space + 1  # setelah spasi
-            else:
-                split_point = end  # paksa potong di batas
-        chunks.append(text[start:split_point])
-        start = split_point
+    # Regex: cocokkan semua karakter SAMPAI salah satu dari . ; : , (termasuk tanda bacanya)
+    # lalu berhenti.
+    pattern = r'[^.;:,]*[.;:,]?'
+    # Kita gunakan re.findall untuk mengambil semua kecocokan
+    # namun hati-hati, pattern di atas akan menghasilkan empty string di akhir
+    chunks = re.findall(pattern, text)
+    # Filter potongan kosong dan potongan yang hanya spasi
+    chunks = [c for c in chunks if c.strip()]
     return chunks
 
-# --- TRANSLATE DENGAN CHUNKING PINTAR ---
+# --- TRANSLATE DENGAN CHUNKING BERDASARKAN TANDA BACA ---
 def translate_smart(text, target):
     text_str = str(text).strip()
-    if len(text_str) <= 4500:
+    if not text_str:
+        return ""
+
+    # Jika teks pendek (tanpa tanda baca sama sekali), langsung translate
+    if not any(p in text_str for p in ['.', ';', ':', ',']):
         return translate_core(text_str, target)
 
-    # Pecah berdasarkan tanda baca
-    chunks = split_at_punctuation(text_str, max_len=4000)
+    # Pecah teks setiap tanda baca
+    chunks = split_by_punctuation(text_str)
     translated_chunks = []
     for chunk in chunks:
         res = translate_core(chunk.strip(), target)
@@ -111,10 +101,11 @@ def translate_smart(text, target):
             return res if res == "ERR_LIMIT" else None
         translated_chunks.append(res)
 
-    # Gabung dengan spasi dan bersihkan spasi ganda
-    return " ".join(translated_chunks).replace("  ", " ")
+    # Gabungkan hasil terjemahan dengan spasi, lalu bersihkan spasi ganda
+    result = " ".join(translated_chunks).replace("  ", " ")
+    return result
 
-# --- ANTARMUKA STREAMLIT (TIDAK DIUBAH) ---
+# --- ANTARMUKA STREAMLIT ---
 st.set_page_config(page_title="Turbo Translator Pro v2", page_icon="⚡", layout="wide")
 
 st.title("⚡ Turbo Excel Translator")
