@@ -40,13 +40,12 @@ def translate_core(text, target, source='id'):
             except Exception:
                 return None
 
-            # Ambil alternatif ke-2 jika ada
+            # Alternatif ke-2
             alternatives = None
             if isinstance(result_json, list) and len(result_json) > 1:
                 second_elem = result_json[1]
                 if isinstance(second_elem, list) and len(second_elem) > 0:
                     alternatives = second_elem
-
             if alternatives and len(alternatives) >= 2:
                 if isinstance(alternatives[1], list) and len(alternatives[1]) > 0:
                     return str(alternatives[1][0])
@@ -66,44 +65,66 @@ def translate_core(text, target, source='id'):
     except Exception:
         return None
 
-# --- PEMECAH TEKS PERSIS DI SETIAP TANDA BACA . ; : , ---
-def split_by_punctuation(text):
-    """
-    Memecah teks menjadi potongan setiap bertemu karakter . ; : ,
-    Potongan tidak dihapus, tanda baca tetap disertakan di akhir potongan.
-    """
-    # Regex: cocokkan semua karakter SAMPAI salah satu dari . ; : , (termasuk tanda bacanya)
-    # lalu berhenti.
+# --- DUA STRATEGI CHUNKING ---
+def chunk_by_punctuation(text):
+    """Mode Akurat: pecah di setiap tanda baca . ; : ,"""
     pattern = r'[^.;:,]*[.;:,]?'
-    # Kita gunakan re.findall untuk mengambil semua kecocokan
-    # namun hati-hati, pattern di atas akan menghasilkan empty string di akhir
     chunks = re.findall(pattern, text)
-    # Filter potongan kosong dan potongan yang hanya spasi
-    chunks = [c for c in chunks if c.strip()]
-    return chunks
+    return [c.strip() for c in chunks if c.strip()]
 
-# --- TRANSLATE DENGAN CHUNKING BERDASARKAN TANDA BACA ---
-def translate_smart(text, target):
+def chunk_by_length(text, max_len=4000):
+    """Mode Cepat: pecah jika > max_len, potong di tanda baca terdekat"""
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + max_len
+        if end >= len(text):
+            chunks.append(text[start:].strip())
+            break
+        sub = text[start:end]
+        matches = list(re.finditer(r'[.;:,]', sub))
+        if matches:
+            last_match = matches[-1]
+            split_point = start + last_match.end()
+        else:
+            last_space = sub.rfind(' ')
+            if last_space != -1:
+                split_point = start + last_space + 1
+            else:
+                split_point = end
+        chunks.append(text[start:split_point].strip())
+        start = split_point
+    return [c for c in chunks if c]
+
+# --- TRANSLATE DENGAN CHUNKING (PILIH MODE) ---
+def translate_smart(text, target, mode="Cepat"):
     text_str = str(text).strip()
     if not text_str:
         return ""
 
-    # Jika teks pendek (tanpa tanda baca sama sekali), langsung translate
-    if not any(p in text_str for p in ['.', ';', ':', ',']):
-        return translate_core(text_str, target)
+    # Tentukan strategi chunking
+    if mode == "Akurat":
+        # Pakai chunk_by_punctuation hanya jika ada tanda baca; jika tidak, langsung utuh
+        if any(p in text_str for p in ['.', ';', ':', ',']):
+            chunks = chunk_by_punctuation(text_str)
+        else:
+            chunks = [text_str]
+    else:  # Cepat
+        if len(text_str) <= 4000:
+            chunks = [text_str]
+        else:
+            chunks = chunk_by_length(text_str, 4000)
 
-    # Pecah teks setiap tanda baca
-    chunks = split_by_punctuation(text_str)
     translated_chunks = []
     for chunk in chunks:
-        res = translate_core(chunk.strip(), target)
+        if not chunk:
+            continue
+        res = translate_core(chunk, target)
         if res is None or res == "ERR_LIMIT":
             return res if res == "ERR_LIMIT" else None
         translated_chunks.append(res)
 
-    # Gabungkan hasil terjemahan dengan spasi, lalu bersihkan spasi ganda
-    result = " ".join(translated_chunks).replace("  ", " ")
-    return result
+    return " ".join(translated_chunks).replace("  ", " ")
 
 # --- ANTARMUKA STREAMLIT ---
 st.set_page_config(page_title="Turbo Translator Pro v2", page_icon="⚡", layout="wide")
@@ -115,6 +136,8 @@ st.markdown("PAKAILAH 1 TAB AJA JANGAN MULTI TAB WOYYYY RUSAK HOST E, NDAK TAK H
 st.sidebar.header("⚙️ Pengaturan")
 target_lang = st.sidebar.text_input("Kode Bahasa Tujuan", value="en", help="Contoh: en, ja, fi, ko, ar")
 max_workers = st.sidebar.slider("Kecepatan (Workers)", 1, 15, 5, help="Disarankan 5-10 agar aman.")
+chunk_mode = st.sidebar.radio("Mode Chunking", ["Cepat", "Akurat"], index=0,
+                              help="Cepat: potong hanya jika >4000 karakter. Akurat: potong di setiap tanda baca (lebih lambat).")
 
 st.sidebar.markdown("---")
 st.sidebar.info("📌 **Catatan:**\nJika hasil download berwarna merah, artinya IP kamu terkena limit sementara. Kurangi Workers atau ganti koneksi internet. pesan untuk mahrus UWES RUS NEK GA KUAT 10 AE GAUSA MEKSO DIULEK ULEK KODENE SAMPE DADI 100!!!")
@@ -142,7 +165,10 @@ if uploaded_file:
                 start_time = time.time()
 
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    future_to_idx = {executor.submit(translate_smart, texts_to_process[i], target_lang): i for i in range(total_rows)}
+                    future_to_idx = {
+                        executor.submit(translate_smart, texts_to_process[i], target_lang, chunk_mode): i
+                        for i in range(total_rows)
+                    }
 
                     completed = 0
                     for future in future_to_idx:
